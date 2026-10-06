@@ -6,6 +6,7 @@ Raster tools. One folder under `tools/`, one pixi task each. Run the tasks from 
 |---|---|
 | canopy height | `pixi run chm --bbox W S E N --out DIR` |
 | tree crowns | `pixi run crowns --chm canopy.tif --out DIR` |
+| buildings | `--buildings` on either command. [docs/buildings.md](docs/buildings.md) |
 
 ## Canopy height
 
@@ -59,3 +60,15 @@ From Python, in this directory: `from tools.crowns import run, delineate, Rule`.
 | `validation.json` | with `--validate` |
 
 `--dem auto` uses the points' ground, or the mean of GEDTM30 and Copernicus DEM GLO-30. `--dem none` skips that. `--crowns watershed` (or `dalponte`, `silva`). A run holds the raster in memory, up to 250 million pixels.
+
+## Buildings
+
+`--buildings` removes roof-height pixels from `chm`, and keeps an estimated trunk out of a solid building in `crowns`. Modes, dates, and the context file: [docs/buildings.md](docs/buildings.md).
+
+```
+pixi run chm --bbox W S E N --out out/ --buildings auto --date 2020
+pixi run crowns --chm out/ --out crowns/
+pixi run crowns --chm canopy.tif --out crowns/ --buildings buildings.gpkg --date 2020
+```
+
+`auto` downloads the Overture subset for the area and stores it under `out/inputs/`. A folder passed to `crowns --chm` reuses that run's footprints and joins its 1 m tiles. `--building-mode strict` clears every footprint pixel. The default, `canopy`, leaves height above the roof.

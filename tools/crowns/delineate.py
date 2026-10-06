@@ -1,7 +1,6 @@
 """Tops and crowns on one canopy-height array. Lengths are metres."""
 from __future__ import annotations
 
-import warnings
 from typing import NamedTuple
 
 import numpy as np
@@ -227,7 +226,7 @@ def nearest(level, canopy, seeds, pixel: float, rule: Rule):
     return region
 
 
-def whole_crowns(region, seeds, pixel: float, rule: Rule):
+def whole_crowns(region, seeds, pixel: float, rule: Rule, excluded=None):
     """`region` with every crown made one piece and renumbered: of a crown's pixels only those joined by their sides
     to its top are kept, a gap one crown encloses is given to it when no larger than `rule.hole`, and a crown under
     `rule.min_area` goes. Returns (the crowns, numbered from 1; for each, the crown of `region` it was)."""
@@ -260,6 +259,8 @@ def whole_crowns(region, seeds, pixel: float, rule: Rule):
         inside[0] = False
         out = np.where(inside[gap], high[gap], out).astype("int32")
 
+    if excluded is not None:
+        out[excluded] = 0
     area = np.bincount(out.ravel(), minlength=len(seeds) + 1) * pixel ** 2
     keep = area >= rule.min_area
     keep[0] = False
@@ -269,15 +270,20 @@ def whole_crowns(region, seeds, pixel: float, rule: Rule):
     return number[out], was
 
 
-def delineate(chm, pixel: float, rule: Rule | None = None, terrain=None) -> Trees:
-    """Trees in a canopy-height array (metres above ground, NaN empty). `pixel` is metres.
+def delineate(chm, pixel: float, rule: Rule | None = None, terrain=None, excluded=None) -> Trees:
+    """The trees of a canopy-height array in metres above ground (NaN where it holds none), `pixel` metres a pixel.
 
-    A top is a high point that wins its window and stands far enough above its pass; either test is off at 0.
-    `watershed` joins canopies over their highest pass. `dalponte` and `silva` grow from the tops.
-    With `terrain`, each crown is set back on the ground before the top and the trunk are read."""
+    A tree is a high point of the smoothed raster that is the highest pixel of its window and stands far enough
+    above its pass; each test is off at 0. Its crown is the canopy that climbs to it (`watershed`), grown from it
+    (`dalponte`) or nearest to it (`silva`). With `terrain` (the ground's elevation per pixel) each crown is put
+    back on the ground it stands on before its top and its trunk are read (`trunks`)."""
     rule = rule or Rule()
+    if excluded is not None:
+        chm = np.where(excluded, np.nan, chm)
     level = surface(chm, pixel, rule.smooth)
     canopy = np.isfinite(level) & (level >= rule.min_height)
+    if excluded is not None:
+        canopy &= ~excluded
     tops, at = climb(level, canopy)
     count, cols = len(at), chm.shape[1]
     height = np.concatenate([[0.0], level.ravel()[at]])
@@ -295,7 +301,7 @@ def delineate(chm, pixel: float, rule: Rule | None = None, terrain=None) -> Tree
     else:
         chosen = np.flatnonzero(marked)
         region = np.concatenate([[0], chosen])[(grown if rule.crowns == "dalponte" else nearest)(raw, raw >= rule.min_height, at[chosen - 1], pixel, rule)]
-    crowns, was = whole_crowns(region, seeds[1:], pixel, rule)
+    crowns, was = whole_crowns(region, seeds[1:], pixel, rule, excluded)
     row, col = np.divmod(seeds[was], cols)
     n = len(was)
     area = np.bincount(crowns.ravel(), minlength=n + 1)[1:]

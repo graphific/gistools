@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 
 from .canopy import Grid
-from .delineate import delineate
+from .delineate import Rule, delineate
 
 OUTLINES, SIMPLIFY, CUTS = ("simplified", "smooth", "pixels"), 0.75, 2
 TILE, OVERLAP_M = 4096, 48.0
@@ -69,7 +69,7 @@ def outlines(crowns, transform, pixel: float, kind: str, tops) -> np.ndarray:
     return np.where(shapely.contains(cut, tops), cut, simple)
 
 
-def find_trees(chm, grid: Grid, rule: Rule, tile: int, outline: str, say, terrain=None) -> tuple[np.ndarray, dict, np.ndarray]:
+def find_trees(chm, grid: Grid, rule: Rule, tile: int, outline: str, say, terrain=None, excluded=None) -> tuple[np.ndarray, dict, np.ndarray]:
     """Every tree of a canopy raster, read in tiles: (the tree's number per pixel; one array a field of FIELDS, tree
     k at [k - 1]; the crowns' polygons in the same order). A tile is read with OVERLAP_M around it and gives the
     trees whose top lies in it, so a tree is found once and the same whatever the tiles; trees are numbered along
@@ -85,7 +85,8 @@ def find_trees(chm, grid: Grid, rule: Rule, tile: int, outline: str, say, terrai
     for k, (r0, c0) in enumerate(tiles, 1):
         r1, c1 = min(r0 + tile, rows), min(c0 + tile, cols)
         ra, ca, rb, cb = max(r0 - halo, 0), max(c0 - halo, 0), min(r1 + halo, rows), min(c1 + halo, cols)
-        trees = delineate(chm[ra:rb, ca:cb], grid.pixel, rule, None if terrain is None else terrain[ra:rb, ca:cb])
+        trees = delineate(chm[ra:rb, ca:cb], grid.pixel, rule, None if terrain is None else terrain[ra:rb, ca:cb],
+                          None if excluded is None else excluded[ra:rb, ca:cb])
         row, col = trees.row + ra, trees.col + ca
         key = np.floor(row).astype("int64") * cols + np.floor(col).astype("int64")
         numbers[r0:r1, c0:c1] = np.concatenate([[0], key + 1]).astype("uint32")[trees.crowns[r0 - ra: r1 - ra, c0 - ca: c1 - ca]]
@@ -142,7 +143,7 @@ def write_vectors(out: Path, table: dict, polygons, crs, formats) -> list[str]:
     from pyogrio.raw import write
 
     shapes = {"tree_tops": shapely.points(table["top_x"], table["top_y"]), "tree_stems": shapely.points(table["stem_x"], table["stem_y"]), "tree_crowns": polygons}
-    names = [name for name, _, _ in FIELDS]
+    names = list(table)
     empty = [~np.isfinite(table[name]) if table[name].dtype.kind == "f" else None for name in names]      # a value the run does not know is empty, not NaN
     written = []
     for layer, kind in VECTORS:

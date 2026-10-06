@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .fetch import META_URL
 from .qgis import flag_name
-from .table import APART, BANDS, ETH_YEAR, FINE_READINGS, FINE_TEXT, FLAG_NAMES, HEIGHT_BANDS, READINGS, SOURCE_BANDS
+from .table import APART, ETH_YEAR, FINE_READINGS, FINE_TEXT, FLAG_NAMES, HEIGHT_BANDS, READINGS, SOURCE_BANDS
 
 
 def write_readme(out: Path, command: str, report: dict, validation: dict | None) -> None:
@@ -94,10 +94,13 @@ def write_readme(out: Path, command: str, report: dict, validation: dict | None)
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Calibrated canopy height at 10 m and 1 m, from ETH, Meta, and a LiDAR lookup table.")
+    from ..buildings import arguments
+    arguments(ap)
     where = ap.add_mutually_exclusive_group(required=True)
     where.add_argument("--bbox", nargs=4, type=float, metavar=("W", "S", "E", "N"), help="degrees")
     where.add_argument("--geojson", type=Path, help="a polygon or a collection; the map is cut to its polygons")
     ap.add_argument("--out", type=Path, required=True)
+    ap.add_argument("--buildings", type=Path, nargs="+", help="auto fetches Overture over this AOI; otherwise supply local building polygons")
     ap.add_argument("--meta", choices=sorted(META_URL), default="v2")
     ap.add_argument("--region", default="pooled", help="a reference place whose own lookups are used instead of the pooled ones")
     ap.add_argument("--debug", action="store_true",
@@ -120,5 +123,5 @@ def main(argv=None) -> int:
     run(bbox=a.bbox, geojson=a.geojson, out=a.out, meta=a.meta, region=a.region, debug=a.debug,
         validate=a.validate, void_zero=a.void_zero, no_dates=a.no_dates, recent=a.recent,
         eth_dir=a.eth_dir, meta_dir=a.meta_dir, cache=a.cache, no_plot=a.no_plot, max_km2=a.max_km2,
-        command=" ".join(sys.argv[1:] if argv is None else argv))
+        command=" ".join(sys.argv[1:] if argv is None else argv), buildings=a.buildings, building_mode=a.building_mode, date=a.date, building_context=a.building_context, building_time_policy=a.building_time_policy)
     return 0

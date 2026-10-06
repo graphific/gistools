@@ -89,7 +89,7 @@ def fine_factor(meta_top, height, outside=None) -> np.ndarray:
 
 
 def write_fine(sources: list, urls: list[str], grid: Grid, factor, out: Path, tags: dict, rasterio,
-               planes: dict | None = None, source: dict | None = None) -> tuple[list[str], list[str]]:
+               planes: dict | None = None, source: dict | None = None, buildings=None) -> tuple[list[str], list[str]]:
     """1 m height, one tiled GeoTIFF per Meta tile, on that tile's grid.
 
     Band 1 is Meta's pixel times `factor`. With `planes` and `source` (--debug), the other 10 m bands are written
@@ -127,12 +127,17 @@ def write_fine(sources: list, urls: list[str], grid: Grid, factor, out: Path, ta
                 window = rasterio.windows.Window(0, strip.row_off - win.row_off, strip.width, strip.height)
                 block = np.full((int(strip.height), int(strip.width)), np.nan, "float32")
                 block[rr, cc] = v * factor[cell]
+                excluded = buildings.exclusion(block, src.window_transform(strip), src.crs) if buildings is not None else None
+                if excluded is not None:
+                    block[excluded] = np.nan
                 dst.write(block, 1, window=window)
                 for i, (name, *_) in enumerate(float_bands, 1):
                     if name == "height_m":
                         continue
                     block.fill(np.nan)
                     block[rr, cc] = cell_value[name][cell]
+                    if excluded is not None:
+                        block[excluded] = np.nan
                     dst.write(block, i, window=window)
         overviews(path, win.width, win.height, Resampling.average)
         written.append(path.name)
@@ -145,10 +150,15 @@ def write_fine(sources: list, urls: list[str], grid: Grid, factor, out: Path, ta
                 dst.set_band_description(i, name)
                 dst.update_tags(i, DESCRIPTION=f"{text}. {CELL_NOTE}", NODATA=str(empty))
             for _v, (strip, rr, cc), cell in cells_within(src, grid, win):
+                heights = np.full((int(strip.height), int(strip.width)), np.nan, "float32")
+                heights[rr, cc] = _v * factor[cell]
+                excluded = buildings.exclusion(heights, src.window_transform(strip), src.crs) if buildings is not None else None
                 window = rasterio.windows.Window(0, strip.row_off - win.row_off, strip.width, strip.height)
                 for i, (name, (empty, _text)) in enumerate(SOURCE_BANDS.items(), 1):
                     block = np.full((int(strip.height), int(strip.width)), empty, "uint16")
                     block[rr, cc] = source_value[name][cell]
+                    if excluded is not None:
+                        block[excluded] = empty
                     dst.write(block, i, window=window)
         overviews(spath, win.width, win.height, Resampling.nearest)
         written_source.append(spath.name)

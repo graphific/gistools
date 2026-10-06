@@ -29,7 +29,7 @@ __all__ = ["Rule", "delineate", "run"]
 def run(chm=None, points=None, out=None, *, crowns="watershed", min_height=2.0, smooth=0.5,
         window=(1.0, 0.035), stands=(0.0, 0.0), floor=0.5, min_area=2.0, stem_share=0.15,
         outline="simplified", format="both", dem="auto", dem_dir=None, pixel=None, normalised=False,
-        crs=None, validate=None, tile=4096, no_plot=False, command=None):
+        crs=None, validate=None, tile=4096, no_plot=False, command=None, buildings=None, building_mode=None, date=None, building_context=None, building_time_policy=None):
     """Write tops, trunks and crowns for a canopy raster or LAS/LAZ files. Returns the file names written."""
     if not out or (chm is None) == (points is None):
         raise ValueError("pass out, and either chm or points")
@@ -63,6 +63,8 @@ def run(chm=None, points=None, out=None, *, crowns="watershed", min_height=2.0, 
         validate=Path(validate) if validate else None,
         tile=tile,
         no_plot=no_plot,
+        buildings=[Path(p) for p in buildings] if buildings else None,
+        building_mode=building_mode, date=date, building_context=building_context, building_time_policy=building_time_policy,
     )
     for given in (a.chm, a.dem if isinstance(a.dem, Path) else None, a.validate, *(a.points or ())):
         if given is not None and not given.exists():
@@ -81,6 +83,8 @@ def produce(a, command: str, aside: list[Path]) -> set[str]:
     """Everything a run reads and writes; the names of the files it wrote. `aside` takes the names of an earlier
     run's data files as soon as they are moved, so that the caller can put them back if this run does not end."""
     import rasterio
+    from ..buildings import from_args, options, prepare_canopy, raster_years
+    prepare_canopy(a)
 
     def say(text: str) -> None:
         print(text, flush=True)
@@ -106,6 +110,15 @@ def produce(a, command: str, aside: list[Path]) -> set[str]:
             warnings.append(f"{told['first_returns_per_m2']:g} first returns per m2: under {SPARSE:g} a canopy raster blurs single trees")
     if crs is None:
         warnings.append("the input names no coordinate system, and neither do the files written")
+    from affine import Affine
+    buildings, excluded = from_args(a.buildings, chm.shape,
+                                   Affine(grid.pixel, 0, grid.west, 0, -grid.pixel, grid.north), crs, options(a))
+    if buildings is not None:
+        buildings.observe(raster_years(a.chm) if a.chm else [])
+        excluded = buildings.exclusion(chm, Affine(grid.pixel, 0, grid.west, 0, -grid.pixel, grid.north), crs)
+        chm = np.where(excluded, np.nan, chm)
+        read["building_exclusion"] = buildings.report(excluded)
+        warnings.append(read["building_exclusion"]["warning"])
     if grid.pixel > 1.5:
         warnings.append(f"a pixel of {grid.pixel:g} m: a crown under about {3 * grid.pixel:g} m across is not told from its neighbours")
     say(f"{read['what']}: {grid.rows:,} x {grid.cols:,} pixels of {grid.pixel:g} m" + (f"; {read['note']}" if read.get("note") else ""))
@@ -125,13 +138,22 @@ def produce(a, command: str, aside: list[Path]) -> set[str]:
     a.out.mkdir(parents=True, exist_ok=True)
     aside.extend(make_way(a.out))
     say(f"terrain: {lie}")
-    numbers, table, polygons = find_trees(chm, grid, rule, a.tile, a.outline, say, terrain)
+    numbers, table, polygons = find_trees(chm, grid, rule, a.tile, a.outline, say, terrain, excluded)
+    if buildings is not None:
+        if buildings.options["mode"] == "strict":
+            polygons = buildings.clip(polygons, crs)
+        else:
+            table, polygons, numbers, decisions = buildings.constrain_stems(
+                table, polygons, numbers, chm, Affine(grid.pixel, 0, grid.west, 0, -grid.pixel, grid.north), terrain)
+            read["building_exclusion"]["candidates"] = decisions
     found = summary(chm, numbers, table, grid, rule)
     say(f"{found['trees']:,} trees, {found['trees_per_ha']:,.0f} a hectare")
     if not found["trees"]:
         warnings.append(f"no tree found: no canopy of {rule.min_height:g} m or more with a crown of {rule.min_area:g} m2")
 
     tags = {"made_by": "tools.crowns", "made": f"{datetime.now(timezone.utc):%Y-%m-%dT%H:%MZ}", "command": command}
+    if a.chm:
+        tags["acquisition_years"] = json.dumps(raster_years(a.chm))
     write_tif(a.out / CANOPY, grid, crs, chm, "height_m", "m", "the canopy raster the trees were read from, metres above ground", tags)
     write_tif(a.out / NUMBERS, grid, crs, numbers, "tree_id", "", "the number of the tree whose crown a pixel lies in, as in the vector files; 0 none", tags)
     reach = max(10.0, 5.0 * math.ceil(float(np.nanpercentile(chm, 99.5)) / 5)) if np.isfinite(chm).any() else 30.0
@@ -149,6 +171,10 @@ def produce(a, command: str, aside: list[Path]) -> set[str]:
               "settings": rule._asdict(), "outline": a.outline, "formats": list(formats), "found": found, "drawn_to_m": reach, "validation": validation,
               "warnings": warnings,
               "fields": {name: {"unit": unit, "holds": text} for name, unit, text in FIELDS}}
+    if buildings is not None and buildings.options["mode"] == "canopy":
+        report["fields"].update({"building_status": {"unit": "code", "holds": decisions["status_codes"]},
+                                 "building_height_m": {"unit": "m", "holds": "maximum supplied height of overlapping contemporaneous buildings; not measured here"},
+                                 "stem_shift_m": {"unit": "m", "holds": "shift from unconstrained stem to a supported outside estimate; not a surveyed trunk"}})
     (a.out / "report.json").write_text(json.dumps(report, indent=1))
     from .cli import write_readme
     write_readme(a.out, command, report, validation)
