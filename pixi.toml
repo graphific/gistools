@@ -1,0 +1,17 @@
+# Environment for the tools in this repo. From this directory:
+#   pixi run chm --bbox W S E N --out DIR
+# Another tool gets its own task and a folder under tools/.
+[workspace]
+name = "tools"
+description = "Raster tools. chm writes a calibrated canopy height at 10 m and 1 m."
+channels = ["conda-forge"]
+platforms = ["linux-64", "osx-arm64", "osx-64", "win-64"]
+
+[dependencies]
+python = ">=3.10"
+numpy = "*"
+rasterio = "*"
+matplotlib-base = "*"
+
+[tasks]
+chm = { cmd = "python -m tools.chm", description = "Calibrated canopy height at 10 m and 1 m. Arguments follow." }
