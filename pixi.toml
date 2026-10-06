@@ -23,3 +23,12 @@ matplotlib-base = "*"
 [tasks]
 chm = { cmd = "python -m tools.chm", description = "Calibrated canopy height at 10 m and 1 m. Arguments follow." }
 crowns = { cmd = "python -m tools.crowns", description = "Tree tops, trunks and crowns. Arguments follow." }
+
+[feature.test.dependencies]
+pytest = "*"
+
+[feature.test.tasks]
+test = "python -m pytest tests/test_cli_buildings.py -q"
+
+[environments]
+test = ["test"]

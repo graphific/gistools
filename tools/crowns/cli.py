@@ -84,10 +84,13 @@ def write_readme(out: Path, command: str, report: dict, validation: dict | None)
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Tree tops, trunks and crowns from a canopy-height raster or LiDAR points.")
+    from ..building_mask import arguments
+    arguments(ap)
     source = ap.add_mutually_exclusive_group(required=True)
     source.add_argument("--chm", type=Path, help="a canopy-height raster in metres above ground")
     source.add_argument("--points", type=Path, nargs="+", help="LAS or LAZ files of one area, their ground classified (class 2)")
     ap.add_argument("--out", type=Path, required=True)
+    ap.add_argument("--buildings", type=Path, nargs="+", help="local building polygons for roof-height screening and crown constraints")
     rule = Rule()
     ap.add_argument("--crowns", choices=CROWNS, default=rule.crowns, help="how a crown is drawn around its top")
     ap.add_argument("--min-height", type=float, default=rule.min_height, help="no tree lower than this (m)")

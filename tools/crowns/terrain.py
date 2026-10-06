@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .canopy import on_grid
+from .canopy import Grid, on_grid
 
 # Both are 30 m on EGM2008. The fetched terrain is their mean: a slope, not a survey height.
 DEM_URL = "https://copernicus-dem-30m.s3.amazonaws.com/{name}/{name}.tif"

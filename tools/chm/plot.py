@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 from itertools import pairwise
 
 import numpy as np

@@ -27,7 +27,7 @@ __all__ = ["apply", "load_table", "run"]
 
 def run(bbox=None, geojson=None, out=None, *, meta="v2", region="pooled", debug=False, validate=None,
         void_zero=False, no_dates=False, recent=False, eth_dir=None, meta_dir=None, cache=None,
-        no_plot=False, max_km2=2500.0, command=None):
+        no_plot=False, max_km2=2500.0, command=None, buildings=None, building_mode="canopy", date=None, building_context=None, building_time_policy="recent"):
     """Write the 10 m and 1 m maps for a box or a GeoJSON. Returns the file names written."""
     if out is None or (bbox is None) == (geojson is None):
         raise ValueError("pass out, and either bbox or geojson")
@@ -48,6 +48,8 @@ def run(bbox=None, geojson=None, out=None, *, meta="v2", region="pooled", debug=
         meta_dir=meta_dir,
         cache=Path(cache) if cache else None,
         no_plot=no_plot,
+        buildings=[Path(p) for p in buildings] if buildings else None,
+        building_mode=building_mode, date=date, building_context=building_context, building_time_policy=building_time_policy,
         max_km2=max_km2,
     )
     aside: list[Path] = []
@@ -65,6 +67,7 @@ def produce(a, command: str, aside: list[Path]) -> set[str]:
     """Everything a run reads and writes; the names of the files it wrote. `aside` takes the names of an earlier
     run's rasters as soon as they are moved, so that the caller can put them back if this run does not end."""
     import rasterio
+    from ..building_mask import from_args, options
 
     if a.validate:
         with rasterio.open(a.validate) as lidar:
@@ -72,6 +75,7 @@ def produce(a, command: str, aside: list[Path]) -> set[str]:
                 raise SystemExit("--validate needs a raster on a projected grid in metres")
     bbox, polygons = (tuple(a.bbox), []) if a.bbox else read_bbox(a.geojson)
     grid = make_grid(*bbox)
+    buildings, excluded = from_args(a.buildings, (grid.height, grid.width), grid.transform, grid.crs, options(a))
     area = grid.height * grid.width * CELL_M ** 2 / 1e6
     if area > a.max_km2:
         raise SystemExit(f"the box is {area:,.0f} km2, over --max-km2 {a.max_km2:,.0f}: ask for less, or raise the limit knowingly")
@@ -100,6 +104,16 @@ def produce(a, command: str, aside: list[Path]) -> set[str]:
         if not (np.isfinite(eth).any() or np.isfinite(meta_top).any()):
             raise SystemExit("neither map holds a pixel over this box: nothing to calibrate")
         got = apply(meta_top, eth, ref, date, recent=a.recent)
+        observed_years = [int(v) for v in np.unique(date[date > 0] // 10000)]
+        if np.isfinite(eth).any():
+            observed_years.append(ETH_YEAR)
+        tags["acquisition_years"] = json.dumps(sorted(set(observed_years)))
+        tags["acquisition_dates_complete"] = str(not ((date == 0) & np.isfinite(meta_top)).any())
+        if buildings is not None:
+            buildings.observe(observed_years)
+            if ((date == 0) & np.isfinite(meta_top) & (got["weight"] > 0)).any():
+                buildings.observation_known = False
+            excluded = buildings.exclusion(got["height"], grid.transform, grid.crs)
         factor = fine_factor(meta_top, got["height"], outside)
         planes = dict(zip(BAND_NAMES, (got["height"], got["height_matched"], expected_error(got["height"], ref, got["weight"]), meta_top, eth, eth_sd,
                                        got["weight"]), strict=True))
@@ -109,9 +123,14 @@ def produce(a, command: str, aside: list[Path]) -> set[str]:
             source = {k: np.where(outside, SOURCE_BANDS[k][0], v).astype(v.dtype) for k, v in source.items()}
             date = np.where(outside, 0, date)
         fine, fine_source = write_fine(sources, meta_files, grid, factor, a.out, tags, rasterio,
-                                       planes if a.debug else None, source if a.debug else None)
+                                       planes if a.debug else None, source if a.debug else None, buildings)
         for src in sources:
             src.close()
+    if buildings is not None:
+        outside = excluded if outside is None else outside | excluded
+        planes = {k: np.where(outside, np.nan, v) for k, v in planes.items()}
+        source = {k: np.where(outside, SOURCE_BANDS[k][0], v).astype(v.dtype) for k, v in source.items()}
+        date = np.where(outside, 0, date)
     height_bands = planes if a.debug else {"height_m": planes["height_m"]}
     write_tif(a.out / "chm_10m.tif", grid, height_bands, tags,
               about={name: (unit, text) for name, unit, _kind, text in HEIGHT_BANDS if name in height_bands})
@@ -158,12 +177,18 @@ def produce(a, command: str, aside: list[Path]) -> set[str]:
               "fine_files": fine, "fine_source_files": fine_source,
               "fine_cells_left_as_read": round(left_as_read, 4) if fine else None, "qgis_files": qgis,
               "prefer": "recent" if a.recent else "blend", "warnings": warnings}
+    if buildings is not None:
+        report["building_exclusion"] = buildings.report(excluded)
+        report["warnings"].append(report["building_exclusion"]["warning"])
+        report["warnings"].append("Fine pixels outside footprints retain the original 10 m calibration, which may include roof-contaminated inputs.")
     validation = None
     if a.validate:
         with rasterio.open(a.validate) as lidar:
             truth, _ = cell_top_and_mean([lidar], grid)
         if a.void_zero:
             truth[truth == 0] = np.nan
+        if outside is not None:
+            truth[outside] = np.nan
         readings = {"meta_as_read": planes["meta_top_m"], "eth_as_read": planes["eth_m"], "meta_calibrated": got["meta_calibrated"],
                     "eth_calibrated": got["eth_calibrated"], "blend": planes["height_m"], "meta_matched": planes["height_matched_m"]}
         validation = {"reference": str(a.validate), "cells": int(np.isfinite(truth).sum()), "readings": {k: against(v, truth) for k, v in readings.items()}}
