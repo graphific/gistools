@@ -19,6 +19,7 @@ laspy = "*"
 lazrs-python = "*"
 pyproj = "*"
 matplotlib-base = "*"
+duckdb = "*"
 
 [tasks]
 chm = { cmd = "python -m tools.chm", description = "Calibrated canopy height at 10 m and 1 m. Arguments follow." }

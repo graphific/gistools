@@ -29,7 +29,7 @@ __all__ = ["Rule", "delineate", "run"]
 def run(chm=None, points=None, out=None, *, crowns="watershed", min_height=2.0, smooth=0.5,
         window=(1.0, 0.035), stands=(0.0, 0.0), floor=0.5, min_area=2.0, stem_share=0.15,
         outline="simplified", format="both", dem="auto", dem_dir=None, pixel=None, normalised=False,
-        crs=None, validate=None, tile=4096, no_plot=False, command=None, buildings=None, building_mode="canopy", date=None, building_context=None, building_time_policy="recent"):
+        crs=None, validate=None, tile=4096, no_plot=False, command=None, buildings=None, building_mode=None, date=None, building_context=None, building_time_policy=None):
     """Write tops, trunks and crowns for a canopy raster or LAS/LAZ files. Returns the file names written."""
     if not out or (chm is None) == (points is None):
         raise ValueError("pass out, and either chm or points")
@@ -83,7 +83,8 @@ def produce(a, command: str, aside: list[Path]) -> set[str]:
     """Everything a run reads and writes; the names of the files it wrote. `aside` takes the names of an earlier
     run's data files as soon as they are moved, so that the caller can put them back if this run does not end."""
     import rasterio
-    from ..building_mask import from_args, options, raster_years
+    from ..building_mask import from_args, options, raster_years, prepare_canopy
+    prepare_canopy(a)
 
     def say(text: str) -> None:
         print(text, flush=True)

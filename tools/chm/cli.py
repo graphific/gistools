@@ -100,7 +100,7 @@ def main(argv=None) -> int:
     where.add_argument("--bbox", nargs=4, type=float, metavar=("W", "S", "E", "N"), help="degrees")
     where.add_argument("--geojson", type=Path, help="a polygon or a collection; the map is cut to its polygons")
     ap.add_argument("--out", type=Path, required=True)
-    ap.add_argument("--buildings", type=Path, nargs="+", help="local building polygons for roof-height screening and crown constraints")
+    ap.add_argument("--buildings", type=Path, nargs="+", help="auto fetches Overture over this AOI; otherwise supply local building polygons")
     ap.add_argument("--meta", choices=sorted(META_URL), default="v2")
     ap.add_argument("--region", default="pooled", help="a reference place whose own lookups are used instead of the pooled ones")
     ap.add_argument("--debug", action="store_true",

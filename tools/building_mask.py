@@ -1,10 +1,10 @@
-"""Optional local building-footprint exclusion shared by the BioTerra CLIs."""
+"""Building constraints from supplied footprints or a pinned public Overture subset."""
 from __future__ import annotations
 
 import hashlib
 import json
 import re
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 WARNING = ("Footprint completeness, registration and height accuracy are unverified. Missing footprints do not "
@@ -366,17 +366,21 @@ def raster_years(path):
 
 
 def arguments(parser):
-    parser.add_argument("--building-mode", choices=("canopy", "strict"), default="canopy",
+    parser.add_argument("--building-mode", choices=("canopy", "strict"), default=None,
                         help="canopy: dated roof-height evidence, retain possible overhang; strict: remove every footprint")
-    parser.add_argument("--date", help="requested year or ISO date; does not change the CHM acquisition date")
+    parser.add_argument("--date", help="requested year, ISO date or today; does not change the CHM acquisition date")
     parser.add_argument("--building-context", type=Path, help="JSON with footprint snapshot year, attribute mapping and explicit tolerances")
-    parser.add_argument("--building-time-policy", choices=("recent", "evidence"), default="recent",
+    parser.add_argument("--building-time-policy", choices=("recent", "evidence"), default=None,
                         help="recent: assume mapped buildings present near snapshot year; evidence: require lifecycle evidence")
 
 
 def options(args):
-    return {"mode": getattr(args, "building_mode", "canopy"), "date": getattr(args, "date", None),
-            "context": getattr(args, "building_context", None), "temporal_policy": getattr(args, "building_time_policy", "recent")}
+    target = getattr(args, "date", None)
+    return {"mode": getattr(args, "building_mode", None) or "canopy",
+            "date": datetime.now().astimezone().date().isoformat() if target == "today" else target,
+            "context": getattr(args, "building_context", None),
+            "cache": str((args.out / "inputs").resolve()),
+            "temporal_policy": getattr(args, "building_time_policy", None) or "recent"}
 
 
 def from_args(paths, shape, transform, crs, settings=None):
@@ -385,5 +389,183 @@ def from_args(paths, shape, transform, crs, settings=None):
 
     if not paths:
         return None, None
+    if any(str(p) == "auto" for p in paths):
+        if len(paths) != 1 or not settings or not settings.get("cache"):
+            raise ValueError("Use --buildings auto alone, with an explicit output directory")
+        from rasterio.warp import transform_bounds
+        bounds = transform_bounds(crs, "EPSG:4326", *array_bounds(*shape, transform), densify_pts=21)
+        paths = [automatic_buildings(bounds, Path(settings["cache"]))]
     buildings = BuildingMask(paths, array_bounds(*shape, transform), crs, settings)
     return buildings, buildings.mask(shape, transform, crs)
+
+
+def file_hash(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def overture_features(bounds, cache):
+    """Window public GeoParquet, retaining heights and provenance; never use ambient AWS credentials."""
+    import duckdb
+    import shapely
+
+    release = public_json("https://stac.overturemaps.org/catalog.json").get("latest")
+    if not isinstance(release, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}\.\d+", release):
+        raise ValueError("Overture did not publish a recognisable latest release; supply a local building file")
+    print(f"Buildings: Overture {release}; reading the AOI subset (first download may take several minutes)", flush=True)
+    directory = cache / "duckdb-extensions"
+    directory.mkdir(parents=True, exist_ok=True)
+    urls = overture_files(bounds, release, cache)
+    if not urls:
+        return release, []
+    west, south, east, north = bounds
+    with duckdb.connect(config={"extension_directory": str(directory), "threads": 2, "memory_limit": "1GB",
+                               "temp_directory": str(cache / "duckdb-scratch")}) as connection:
+        connection.execute("INSTALL spatial; LOAD spatial; INSTALL httpfs; LOAD httpfs")
+        connection.execute("SET s3_endpoint='s3.us-west-2.amazonaws.com'; SET s3_url_style='vhost'; SET s3_use_ssl=true")
+        connection.execute("SET s3_region='us-west-2'; SET s3_access_key_id=''; SET s3_secret_access_key=''; SET s3_session_token=''")
+        rows = connection.execute("""
+            SELECT id, height, min_height, roof_height, to_json(sources), ST_AsWKB(geometry)
+            FROM read_parquet(?)
+            WHERE bbox.xmax >= ? AND bbox.xmin <= ? AND bbox.ymax >= ? AND bbox.ymin <= ?
+            ORDER BY id
+        """, [urls, west, east, south, north]).fetchall()
+    features = [{"type": "Feature", "geometry": shapely.geometry.mapping(shapely.from_wkb(bytes(geometry))),
+                 "properties": {"id": identifier, "height": height, "min_height": minimum, "roof_height": roof,
+                                "sources": sources, "release": release}}
+                for identifier, height, minimum, roof, sources, geometry in rows]
+    print(f"Buildings: {len(features)} footprints read", flush=True)
+    return release, features
+
+
+def public_json(url):
+    import urllib.request
+
+    with urllib.request.urlopen(url, timeout=60) as response:
+        return json.load(response)
+
+
+def overture_files(bounds, release, cache):
+    """Use every publisher file extent, including boundary intersections, before reading Parquet."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    prefix = f"https://stac.overturemaps.org/{release}/buildings/building/"
+    collection = public_json(prefix + "collection.json")
+    items = [link["href"] for link in collection["links"] if link["rel"] == "item"]
+    if not items or len(items) != collection["partition:file_count"] or any(not url.startswith(prefix) for url in items):
+        raise ValueError("Overture file index is incomplete or outside the requested release")
+    west, south, east, north = bounds
+    selected, records = [], []
+    asset_prefix = f"https://overturemaps-us-west-2.s3.us-west-2.amazonaws.com/release/{release}/theme=buildings/type=building/"
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        for item in pool.map(public_json, items):
+            left, bottom, right, top = item["bbox"]
+            url = item["assets"]["aws"]["href"]
+            if not url.startswith(asset_prefix) or not url.endswith(".parquet"):
+                raise ValueError("Overture asset is outside the requested building release")
+            intersects = right >= west and left <= east and top >= south and bottom <= north
+            records.append({"id": item["id"], "bbox": item["bbox"], "href": url, "selected": intersects})
+            if intersects:
+                selected.append(url)
+    (cache / f"overture_partitions__{release}.json").write_text(json.dumps(records, indent=2))
+    print(f"Buildings: {len(selected)} of {len(items)} publisher files intersect the AOI", flush=True)
+    return sorted(set(selected))
+
+
+def automatic_buildings(bounds, cache):
+    """Pin one AOI/release/file receipt per output directory; reruns do not silently refresh the source."""
+    cache.mkdir(parents=True, exist_ok=True)
+    receipt = cache / "buildings.json"
+    bounds = [round(float(v), 9) for v in bounds]
+    if receipt.exists():
+        record = json.loads(receipt.read_text())
+        path = cache / Path(record["file"]).name
+        if record["bbox"] != bounds:
+            raise ValueError("Cached buildings belong to another AOI; use a new output directory")
+        if file_hash(path) != record["sha256"]:
+            raise ValueError("Cached building file changed; inspect it before reusing the run")
+        print(f"Buildings: reusing verified Overture {record['release']} subset", flush=True)
+        return path
+    release, features = overture_features(bounds, cache)
+    path = cache / f"buildings_overture__{release[:10]}__src.geojson"
+    payload = json.dumps({"type": "FeatureCollection", "features": features}, allow_nan=False).encode()
+    temporary = path.with_suffix(".part")
+    temporary.write_bytes(payload)
+    temporary.replace(path)
+    receipt.write_text(json.dumps({"bbox": bounds, "release": release, "file": path.name,
+                                   "features": len(features), "sha256": file_hash(path)}, indent=2))
+    return path
+
+
+def prepare_canopy(args):
+    """Accept a CHM run folder, inheriting its verified buildings and joining every fine tile once."""
+    if not args.chm or not args.chm.is_dir():
+        return
+    directory = args.chm.resolve()
+    if directory == args.out.resolve():
+        raise ValueError("CHM and crown output directories must differ")
+    report = json.loads((directory / "report.json").read_text())
+    tiles = [directory / name for name in report.get("fine_files", [])]
+    if not tiles or any(not p.is_file() or not p.resolve().is_relative_to(directory) for p in tiles):
+        raise ValueError("CHM folder must contain every fine_files raster recorded in report.json")
+    evidence = report.get("building_exclusion")
+    if evidence and not getattr(args, "buildings", None):
+        paths = []
+        for source in evidence["sources"]:
+            path = Path(source["path"])
+            local = directory / "inputs" / path.name
+            path = local if local.is_file() else path
+            if file_hash(path) != source["sha256"]:
+                raise ValueError("CHM building input changed; refusing to inherit a different source")
+            paths.append(path)
+        args.buildings = paths
+        inherited = evidence["options"]
+        for name, key in (("date", "date"), ("building_mode", "mode"), ("building_time_policy", "temporal_policy")):
+            if getattr(args, name, None) is None:
+                setattr(args, name, inherited.get(key))
+        if not getattr(args, "building_context", None) and inherited.get("context"):
+            context = Path(inherited["context"])
+            if file_hash(context) != inherited["context_sha256"]:
+                raise ValueError("CHM building context changed")
+            args.building_context = context
+    args.chm = tiles[0] if len(tiles) == 1 else mosaic_canopy(tiles, args.out / "inputs")
+
+
+def mosaic_canopy(tiles, cache):
+    """Disk-backed merge of band 1; dates describe every contributing tile, not just the first."""
+    import math
+
+    import rasterio
+    from rasterio.merge import merge
+
+    years, complete, extents, reference = set(), True, [], None
+    for path in tiles:
+        observed = raster_years(path)
+        years.update(observed)
+        complete &= bool(observed)
+        with rasterio.open(path) as src:
+            if reference is None:
+                reference = (src.crs, src.res)
+            if src.crs != reference[0] or src.res != reference[1] or src.transform.b or src.transform.d:
+                raise ValueError("Fine CHM tiles must share a north-up CRS and resolution")
+            extents.append(src.bounds)
+    left, bottom = min(b.left for b in extents), min(b.bottom for b in extents)
+    right, top = max(b.right for b in extents), max(b.top for b in extents)
+    pixels = math.ceil((right - left) / reference[1][0]) * math.ceil((top - bottom) / reference[1][1])
+    if pixels > 250_000_000:
+        raise ValueError("Combined CHM exceeds the crown reader's 250 million pixel limit; use a smaller AOI")
+    cache.mkdir(parents=True, exist_ok=True)
+    path = cache / "canopy_1m.tif"
+    temporary = cache / "canopy_1m.part.tif"
+    merge(tiles, indexes=[1], dst_path=temporary, mem_limit=256,
+          dst_kwds={"compress": "deflate", "tiled": True, "blockxsize": 256, "blockysize": 256, "BIGTIFF": "IF_SAFER"})
+    with rasterio.open(temporary, "r+") as dst:
+        dst.update_tags(acquisition_years=json.dumps(sorted(years)), acquisition_dates_complete=str(complete),
+                        input_tiles=json.dumps([str(p) for p in tiles]))
+        dst.set_band_description(1, "height_m")
+        dst.set_band_unit(1, "m")
+    temporary.replace(path)
+    return path

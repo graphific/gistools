@@ -321,3 +321,103 @@ def test_crown_canopy_mode_publishes_unknowns_and_preserves_nearby_tree(scene, t
     with rasterio.open(out / "crown_ids.tif") as src:
         labels = src.read(1)
         assert labels[12, 12] == 0 and labels[35, 40] > 0
+
+
+def test_automatic_buildings_pin_scope_and_detect_changed_cache(scene, tmp_path, monkeypatch):
+    import building_mask as mask
+
+    _, _, path, _ = scene
+    calls = []
+
+    def fetch(bounds, cache):
+        calls.append(bounds)
+        return "2026-10-01.0", json.loads(path.read_text())["features"]
+
+    monkeypatch.setattr(mask, "overture_features", fetch)
+    cache = tmp_path / "automatic"
+    result = mask.automatic_buildings([3, 45, 3.1, 45.1], cache)
+    assert mask.automatic_buildings([3, 45, 3.1, 45.1], cache) == result and len(calls) == 1
+    with pytest.raises(ValueError, match="another AOI"):
+        mask.automatic_buildings([4, 45, 4.1, 45.1], cache)
+    result.write_text(result.read_text() + " ")
+    with pytest.raises(ValueError, match="changed"):
+        mask.automatic_buildings([3, 45, 3.1, 45.1], cache)
+
+
+def test_overture_file_selection_keeps_boundary_intersections(tmp_path, monkeypatch):
+    import building_mask as mask
+
+    release = "2026-09-23.1"
+    prefix = f"https://stac.overturemaps.org/{release}/buildings/building/"
+    assets = f"https://overturemaps-us-west-2.s3.us-west-2.amazonaws.com/release/{release}/theme=buildings/type=building/"
+    extents = [[0, 0, 1, 1], [1, 0, 2, 1], [3, 0, 4, 1]]
+    collection = {"links": [{"rel": "item", "href": f"{prefix}{i}.json"} for i in range(3)], "partition:file_count": 3}
+    records = {f"{prefix}{i}.json": {"id": str(i), "bbox": bbox, "assets": {"aws": {"href": f"{assets}{i}.parquet"}}}
+               for i, bbox in enumerate(extents)}
+    monkeypatch.setattr(mask, "public_json", lambda url: collection if url.endswith("collection.json") else records[url])
+    assert mask.overture_files([0.5, 0.5, 1, 1.5], release, tmp_path) == [f"{assets}0.parquet", f"{assets}1.parquet"]
+    collection["partition:file_count"] = 4
+    with pytest.raises(ValueError, match="incomplete"):
+        mask.overture_files([0.5, 0.5, 1, 1.5], release, tmp_path)
+
+
+def test_cli_auto_buildings_and_folder_inheritance(scene, tmp_path, monkeypatch):
+    from rasterio.warp import transform_geom
+
+    mask = importlib.import_module("standalone_tools.building_mask" if STANDALONE else "building_mask")
+    raster, _, _, polygon = scene
+    calls = []
+
+    def fetch(bounds, cache):
+        calls.append(bounds)
+        return "2026-10-01.0", [{"type": "Feature", "properties": {"height": 50},
+                                 "geometry": transform_geom(CRS, "EPSG:4326", mapping(polygon))}]
+
+    monkeypatch.setattr(mask, "overture_features", fetch)
+    grid = CHM.Grid(rasterio.crs.CRS.from_string(CRS), from_origin(500000, 5000060, 10, 10), 6, 6)
+    out = tmp_path / "auto-chm"
+    with patch.object(CHM, "make_grid", return_value=grid), \
+         patch.object(CHM, "read_eth", return_value=(np.full((6, 6), 12., dtype="float32"), ["fixture"])), \
+         patch.object(CHM, "open_meta", side_effect=lambda *a: ([rasterio.open(raster)], [str(raster)])):
+        CHM.main(["--bbox", "3", "45", "3.01", "45.01", "--out", str(out), "--debug" if STANDALONE else "--fine",
+                  "--no-dates", "--no-plot", "--buildings", "auto", "--date", "2026-10-06"])
+    crowns = tmp_path / "auto-crowns"
+    CROWNS.main(["--chm", str(out), "--out", str(crowns), "--dem", "none", "--no-plot"])
+    report = json.loads((crowns / "report.json").read_text())["input"]["building_exclusion"]
+    assert len(calls) == 1 and report["requested_date"] == "2026-10-06"
+    assert report["options"]["mode"] == "canopy"
+    with rasterio.open(crowns / "crown_ids.tif") as src:
+        assert src.read(1)[12, 12] == 0 and src.read(1)[35, 40] > 0
+    footprint = Path(report["sources"][0]["path"])
+    footprint.write_text(footprint.read_text() + " ")
+    with pytest.raises(ValueError, match="changed"):
+        CROWNS.main(["--chm", str(out), "--out", str(tmp_path / "changed"), "--dem", "none", "--no-plot"])
+
+
+def test_mosaic_folder_keeps_dates_nodata_and_seam_tree(tmp_path):
+    from types import SimpleNamespace
+
+    import building_mask as mask
+
+    folder = tmp_path / "chm"
+    folder.mkdir()
+    rr, cc = np.indices((40, 80))
+    values = np.maximum(15 - np.hypot(rr - 20, cc - 39.5), 0).astype("float32")
+    values[:2, :] = np.nan
+    paths = []
+    for part, when in enumerate((2020, 2023)):
+        path = folder / f"chm_1m_{part}.tif"
+        with rasterio.open(path, "w", driver="GTiff", count=1, width=40, height=40, dtype="float32",
+                           crs=CRS, transform=from_origin(500000 + part * 40, 5000060, 1, 1), nodata=np.nan) as dst:
+            dst.write(values[:, part * 40:(part + 1) * 40], 1)
+            dst.update_tags(acquisition_year=when)
+        paths.append(path)
+    (folder / "report.json").write_text(json.dumps({"fine_files": [p.name for p in paths]}))
+    args = SimpleNamespace(chm=folder, out=tmp_path / "mosaic")
+    mask.prepare_canopy(args)
+    with rasterio.open(args.chm) as src:
+        np.testing.assert_array_equal(src.read(1), values)
+    assert mask.raster_years(args.chm) == [2020, 2023]
+    CROWNS.main(["--chm", str(folder), "--out", str(tmp_path / "crowns"), "--dem", "none", "--no-plot"])
+    report = json.loads((tmp_path / "crowns/report.json").read_text())
+    assert report["found"]["trees"] == 1

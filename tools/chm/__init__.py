@@ -27,7 +27,7 @@ __all__ = ["apply", "load_table", "run"]
 
 def run(bbox=None, geojson=None, out=None, *, meta="v2", region="pooled", debug=False, validate=None,
         void_zero=False, no_dates=False, recent=False, eth_dir=None, meta_dir=None, cache=None,
-        no_plot=False, max_km2=2500.0, command=None, buildings=None, building_mode="canopy", date=None, building_context=None, building_time_policy="recent"):
+        no_plot=False, max_km2=2500.0, command=None, buildings=None, building_mode=None, date=None, building_context=None, building_time_policy=None):
     """Write the 10 m and 1 m maps for a box or a GeoJSON. Returns the file names written."""
     if out is None or (bbox is None) == (geojson is None):
         raise ValueError("pass out, and either bbox or geojson")
@@ -75,10 +75,10 @@ def produce(a, command: str, aside: list[Path]) -> set[str]:
                 raise SystemExit("--validate needs a raster on a projected grid in metres")
     bbox, polygons = (tuple(a.bbox), []) if a.bbox else read_bbox(a.geojson)
     grid = make_grid(*bbox)
-    buildings, excluded = from_args(a.buildings, (grid.height, grid.width), grid.transform, grid.crs, options(a))
     area = grid.height * grid.width * CELL_M ** 2 / 1e6
     if area > a.max_km2:
         raise SystemExit(f"the box is {area:,.0f} km2, over --max-km2 {a.max_km2:,.0f}: ask for less, or raise the limit knowingly")
+    buildings, excluded = from_args(a.buildings, (grid.height, grid.width), grid.transform, grid.crs, options(a))
     ref = load_table(a.meta, a.region)
     outside = None
     if polygons:

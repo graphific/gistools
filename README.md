@@ -63,7 +63,7 @@ From Python, in this directory: `from tools.crowns import run, delineate, Rule`.
 ## Building-aware heights and crowns
 
 **Buildings and dates.** `--buildings /absolute/path/buildings.gpkg --date 2020 --building-context context.json`
-reads local Overture, OSM or national polygons (multiple files or GeoJSON also work), without fetching. `pyogrio`
+reads local Overture, OSM or national polygons (multiple files or GeoJSON also work), for supplied files. `pyogrio`
 and `shapely` are pinned dependencies. Default `--building-mode canopy` excludes only roof-compatible heights
 with compatible temporal evidence or a declared recent-presence assumption; heights above the roof remain possible overhang, not confirmed vegetation.
 Unknown building height or incompatible dates leave CHM heights unresolved. `--building-mode strict` is the
@@ -117,3 +117,25 @@ The Python `chm.run` and `crowns.run` accept `buildings`, `date`, `building_cont
 `building_mode` and `building_time_policy`. `pixi run -e test test` runs the controlled
 roof/tree, dates, geometry, overhang and output checks. Set TMPDIR and pytest basetemp
 to NAS scratch on BioTerra. These controls establish code behavior, not urban accuracy.
+
+## Automatic buildings and a two-command workflow
+
+```bash
+pixi run chm --geojson /mnt/p/amsterdam_bos.geojson --out /mnt/p/BIOTERRA/work/results/amsterdam-bos/chm --buildings auto --date today --debug
+pixi run crowns --chm /mnt/p/BIOTERRA/work/results/amsterdam-bos/chm --out /mnt/p/BIOTERRA/work/results/amsterdam-bos/crowns
+```
+
+`--buildings auto` fetches only the AOI's Overture subset, pinning its release, bounds
+and checksum in the output's `inputs/`. A rerun reuses the receipt and refuses changed
+files or another AOI. DuckDB extensions and query spill also stay there. `today` is the
+local calendar date, recorded as ISO; source imagery keeps its actual acquisition dates.
+
+A CHM folder input makes crowns combine all its fine tiles before detection, inheriting
+the verified footprint files, context and date/settings unless explicitly overridden.
+The intermediate mosaic is disk-backed under the crown output's `inputs/`; its source
+years describe all tiles. The 250-million-pixel crown reader limit still applies.
+Keep the CHM and crown output directories separate. A single raster remains supported.
+
+CHM screening removes roof-compatible heights; crown constraints separately test stem
+locations. Both stages use footprints because canopy above roofs may remain while an
+estimated stem inside a solid building is implausible. This does not prove vegetation.
