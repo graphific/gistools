@@ -94,7 +94,7 @@ def write_readme(out: Path, command: str, report: dict, validation: dict | None)
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Calibrated canopy height at 10 m and 1 m, from ETH, Meta, and a LiDAR lookup table.")
-    from ..building_mask import arguments
+    from ..buildings import arguments
     arguments(ap)
     where = ap.add_mutually_exclusive_group(required=True)
     where.add_argument("--bbox", nargs=4, type=float, metavar=("W", "S", "E", "N"), help="degrees")

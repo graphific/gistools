@@ -84,7 +84,7 @@ def write_readme(out: Path, command: str, report: dict, validation: dict | None)
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Tree tops, trunks and crowns from a canopy-height raster or LiDAR points.")
-    from ..building_mask import arguments
+    from ..buildings import arguments
     arguments(ap)
     source = ap.add_mutually_exclusive_group(required=True)
     source.add_argument("--chm", type=Path, help="a canopy raster or CHM output folder (combine fine tiles and reuse building settings)")

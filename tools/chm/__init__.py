@@ -67,7 +67,7 @@ def produce(a, command: str, aside: list[Path]) -> set[str]:
     """Everything a run reads and writes; the names of the files it wrote. `aside` takes the names of an earlier
     run's rasters as soon as they are moved, so that the caller can put them back if this run does not end."""
     import rasterio
-    from ..building_mask import from_args, options
+    from ..buildings import from_args, options
 
     if a.validate:
         with rasterio.open(a.validate) as lidar:

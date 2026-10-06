@@ -324,7 +324,7 @@ def test_crown_canopy_mode_publishes_unknowns_and_preserves_nearby_tree(scene, t
 
 
 def test_automatic_buildings_pin_scope_and_detect_changed_cache(scene, tmp_path, monkeypatch):
-    import building_mask as mask
+    import buildings.overture as mask
 
     _, _, path, _ = scene
     calls = []
@@ -345,7 +345,7 @@ def test_automatic_buildings_pin_scope_and_detect_changed_cache(scene, tmp_path,
 
 
 def test_overture_file_selection_keeps_boundary_intersections(tmp_path, monkeypatch):
-    import building_mask as mask
+    import buildings.overture as mask
 
     release = "2026-09-23.1"
     prefix = f"https://stac.overturemaps.org/{release}/buildings/building/"
@@ -364,7 +364,7 @@ def test_overture_file_selection_keeps_boundary_intersections(tmp_path, monkeypa
 def test_cli_auto_buildings_and_folder_inheritance(scene, tmp_path, monkeypatch):
     from rasterio.warp import transform_geom
 
-    mask = importlib.import_module("standalone_tools.building_mask" if STANDALONE else "building_mask")
+    mask = importlib.import_module("standalone_tools.buildings.overture" if STANDALONE else "building_mask")
     raster, _, _, polygon = scene
     calls = []
 
